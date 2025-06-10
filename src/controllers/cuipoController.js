@@ -1,0 +1,204 @@
+const multer = require("multer");
+const path = require("path");
+const XLSX = require("xlsx");
+const fs = require("fs");
+const { pool } = require("../db");
+
+// Configuración de multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    if (ext !== ".xlsx" && ext !== ".xlsm") {
+      return cb(new Error("Solo se permiten archivos Excel (.xlsx, .xlsm)"));
+    }
+    cb(null, true);
+  },
+}).single("file");
+
+function normalizeName(name) {
+  return name
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+}
+
+// Controlador para subir y procesar el archivo Excel
+async function uploadExcel(req, res) {
+  upload(req, res, async function (err) {
+    if (err) return res.status(400).json({ error: err.message });
+
+    if (!req.file) return res.status(400).json({ error: "Archivo no recibido" });
+
+    try {
+      const filePath = req.file.path;
+      const workbook = XLSX.readFile(filePath);
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: null });
+
+      if (worksheet.length === 0) {
+        fs.unlinkSync(filePath);
+        return res.status(400).json({ error: "El archivo está vacío" });
+      }
+
+      const tableName = normalizeName(path.parse(req.file.originalname).name);
+      const rawHeaders = Object.keys(worksheet[0]);
+      const normalizedHeaders = rawHeaders.map(normalizeName);
+
+      // Construir la sentencia CREATE TABLE con campo ID
+      const createTableQuery = `
+        CREATE TABLE IF NOT EXISTS ${process.env.DB_SCHEMA}."${tableName}" (
+          id SERIAL PRIMARY KEY,
+          ${normalizedHeaders.map(h => `"${h}" TEXT`).join(", ")}
+        );
+      `;
+
+      await pool.query(createTableQuery);
+
+      // Insertar los datos (sin incluir el campo id)
+      for (let row of worksheet) {
+        const values = rawHeaders.map(h => row[h] ?? "").map(val => val.toString().trim());
+        const isEmptyRow = values.every(v => v === "");
+
+        if (isEmptyRow) continue; // Salta filas vacías
+
+        const insertQuery = `
+          INSERT INTO ${process.env.DB_SCHEMA}."${tableName}" (${normalizedHeaders.map(h => `"${h}"`).join(", ")})
+          VALUES (${normalizedHeaders.map((_, i) => `$${i + 1}`).join(", ")});
+        `;
+        await pool.query(insertQuery, values);
+      }
+
+      // Mostrar primeras 10 filas
+      const previewQuery = `SELECT * FROM ${process.env.DB_SCHEMA}."${tableName}" LIMIT 10;`;
+      const preview = await pool.query(previewQuery);
+
+      // Eliminar archivo temporal
+      fs.unlinkSync(filePath);
+
+      return res.status(200).json({
+        message: `Archivo ${req.file.originalname} subido correctamente`,
+        table: tableName,
+        preview: preview.rows,
+      });
+    } catch (e) {
+      console.error("❌ Error al procesar el archivo:", e.message);
+      return res.status(500).json({ error: "Error al procesar el archivo" });
+    }
+  });
+}
+
+// Controlador para listar todas las tablas en el esquema sis_cuipo
+async function listTables(req, res) {
+  try {
+    const result = await pool.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = $1
+        AND table_type = 'BASE TABLE';
+    `, [process.env.DB_SCHEMA]);
+
+    const tables = result.rows.map(row => row.table_name);
+
+    return res.status(200).json({ tables });
+  } catch (error) {
+    console.error("❌ Error al listar tablas:", error.message);
+    return res.status(500).json({ error: "Error al obtener las tablas" });
+  }
+}
+
+// Controlador para obtener los datos de una tabla específica
+async function getTableData(req, res) {
+  const { tableName } = req.params;
+
+  if (!tableName) {
+    return res.status(400).json({ error: "Nombre de tabla no proporcionado" });
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT * FROM ${process.env.DB_SCHEMA}."${tableName}" LIMIT 100;
+    `);
+
+    return res.status(200).json({ rows: result.rows });
+  } catch (error) {
+    console.error("❌ Error al obtener datos de la tabla:", error.message);
+    return res.status(500).json({ error: "Error al obtener los datos de la tabla" });
+  }
+}
+
+// Obtener los datos de la tabla CPC
+async function obtenerDatosCPC(req, res) {
+  try {
+    const result = await pool.query(`
+      SELECT codigo, clase_o_subclase
+      FROM sis_cuipo.cpc
+      WHERE codigo IS NOT NULL AND clase_o_subclase IS NOT NULL
+    `);
+
+    const datos = result.rows.map(row => ({
+      codigo: row.codigo,
+      clase_o_subclase: row.clase_o_subclase,
+      codigo_clase_o_subclase: `${row.codigo} - ${row.clase_o_subclase}`,
+    }));
+
+    res.json(datos);
+  } catch (error) {
+    console.error('Error al obtener datos del CPC:', error);
+    res.status(500).json({ error: 'Error al obtener datos del CPC' });
+  }
+}
+
+// Obtener los datos de la plantilla principal
+async function obtenerPlantillaDistrito(req, res) {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM sis_cuipo.cuipo_plantilla_distrito_2025_vf
+    `);
+    res.json({ rows: result.rows });
+  } catch (error) {
+    console.error('Error al obtener plantilla distrito:', error);
+    res.status(500).json({ error: 'Error al obtener plantilla distrito' });
+  }
+}
+
+// Guardar los datos de la plantilla principal
+async function actualizarPlantillaDistrito(req, res) {
+  const updatedRows = req.body.rows;
+
+  try {
+    for (const row of updatedRows) {
+      await pool.query(`
+        UPDATE sis_cuipo.cuipo_plantilla_distrito_2025_vf
+        SET codigo_y_nombre_del_cpc = $1,
+            validador_cpc = $2,
+            cpc_cuipo = $3
+        WHERE id = $4
+      `, [row.codigo_y_nombre_del_cpc, row.validador_cpc, row.cpc_cuipo, row.id]);
+    }
+
+    res.json({ message: 'Actualización exitosa' });
+  } catch (error) {
+    console.error('Error al actualizar plantilla:', error);
+    res.status(500).json({ error: 'Error al actualizar plantilla' });
+  }
+}
+
+module.exports = {
+  uploadExcel,
+  listTables,
+  getTableData,
+  obtenerDatosCPC,
+  obtenerPlantillaDistrito,
+  actualizarPlantillaDistrito
+}
