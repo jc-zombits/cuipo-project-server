@@ -12,6 +12,8 @@ const PORT = process.env.PORT || 5005;
 app.use(cors({
   origin: 'http://localhost:3005',
   credentials: true,
+  //methods: ['GET', 'POST', 'PUT'],
+  //allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 

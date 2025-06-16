@@ -139,19 +139,43 @@ async function getTableData(req, res) {
 // Obtener los datos de la tabla CPC
 async function obtenerDatosCPC(req, res) {
   try {
+    const { tiene_cpc } = req.query;
+
+    if (!tiene_cpc) {
+      // Si no se pasa el parámetro, retorna todo (comportamiento original)
+      const result = await pool.query(`
+        SELECT codigo, clase_o_subclase
+        FROM sis_cuipo.cpc
+        WHERE codigo IS NOT NULL AND clase_o_subclase IS NOT NULL
+      `);
+
+      const datos = result.rows.map(row => ({
+        codigo: row.codigo,
+        clase_o_subclase: row.clase_o_subclase,
+        codigo_clase_o_subclase: `${row.codigo} - ${row.clase_o_subclase}`,
+      }));
+
+      return res.json(datos);
+    }
+
+    // Extraer último dígito del tiene_cpc
+    const ultimoDigito = tiene_cpc.toString().slice(-1);
+
     const result = await pool.query(`
       SELECT codigo, clase_o_subclase
       FROM sis_cuipo.cpc
-      WHERE codigo IS NOT NULL AND clase_o_subclase IS NOT NULL
-    `);
+      WHERE codigo IS NOT NULL
+        AND clase_o_subclase IS NOT NULL
+        AND LEFT(codigo, 1) = $1
+    `, [ultimoDigito]);
 
-    const datos = result.rows.map(row => ({
+    const datosFiltrados = result.rows.map(row => ({
       codigo: row.codigo,
       clase_o_subclase: row.clase_o_subclase,
       codigo_clase_o_subclase: `${row.codigo} - ${row.clase_o_subclase}`,
     }));
 
-    res.json(datos);
+    res.json(datosFiltrados);
   } catch (error) {
     console.error('Error al obtener datos del CPC:', error);
     res.status(500).json({ error: 'Error al obtener datos del CPC' });
@@ -163,7 +187,7 @@ async function obtenerPlantillaDistrito(req, res) {
   try {
     const result = await pool.query(`
       SELECT *
-      FROM sis_cuipo.cuipo_plantilla_distrito_2025_vf
+      FROM sis_cuipo.cuipo_plantilla_distrito_2025_primer_trimestre_plan_b
     `);
     res.json({ rows: result.rows });
   } catch (error) {
@@ -179,7 +203,7 @@ async function actualizarPlantillaDistrito(req, res) {
   try {
     for (const row of updatedRows) {
       await pool.query(`
-        UPDATE sis_cuipo.cuipo_plantilla_distrito_2025_vf
+        UPDATE sis_cuipo.cuipo_plantilla_distrito_2025_primer_trimestre_plan_b
         SET codigo_y_nombre_del_cpc = $1,
             validador_cpc = $2,
             cpc_cuipo = $3
@@ -194,11 +218,54 @@ async function actualizarPlantillaDistrito(req, res) {
   }
 }
 
+// Obtener productos por código_sap (para el campo proyecto)
+async function obtenerProductosPorProyecto(req, res) {
+  let proyecto = req.params.codigo_sap?.trim();
+
+  if (!proyecto) {
+    return res.status(400).json({ error: 'El parámetro proyecto es requerido' });
+  }
+
+  try {
+    console.log('Consulta con código SAP:', proyecto);
+
+    const result = await pool.query(
+      `SELECT cod_pdto_y_nombre 
+       FROM sis_cuipo.productos_por_proyecto 
+       WHERE codigo_sap = $1`,
+      [proyecto]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('Sin resultados para:', proyecto);
+      return res.status(200).json([]);
+    }
+
+    const productos = result.rows.map(row => ({
+      label: row.cod_pdto_y_nombre,
+      value: row.cod_pdto_y_nombre
+    }));
+
+    return res.json(productos);
+
+  } catch (error) {
+    console.error('Error en consulta SQL:', {
+      error: error.message,
+      proyecto: proyecto,
+    });
+    return res.status(500).json({ 
+      error: 'Error en base de datos',
+      detalle: error.message 
+    });
+  }
+}
+
 module.exports = {
   uploadExcel,
   listTables,
   getTableData,
   obtenerDatosCPC,
   obtenerPlantillaDistrito,
-  actualizarPlantillaDistrito
+  actualizarPlantillaDistrito,
+  obtenerProductosPorProyecto
 }

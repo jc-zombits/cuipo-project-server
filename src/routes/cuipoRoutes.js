@@ -6,7 +6,8 @@ const {
     getTableData, 
     obtenerDatosCPC, 
     obtenerPlantillaDistrito, 
-    actualizarPlantillaDistrito } = require("../controllers/cuipoController");
+    actualizarPlantillaDistrito,
+    obtenerProductosPorProyecto } = require("../controllers/cuipoController");
 
 // Subir archivo Excel
 router.post("/upload", uploadExcel);
@@ -25,5 +26,8 @@ router.get('/tables/plantilla-principal', obtenerPlantillaDistrito);
 
 // Guardar los datos de la plantilla principal
 router.post('/plantilla-principal/actualizar', actualizarPlantillaDistrito);
+
+// Obtener productos por proyecto
+router.get('/productos_por_proyecto/:codigo_sap', obtenerProductosPorProyecto);
 
 module.exports = router;
